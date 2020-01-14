@@ -3,14 +3,16 @@ title: "Homework 1"
 author: "Stat-S 432"
 date: "Due 23 January 2020, 11:59pm"
 output:
-  html_document:
-    theme: flatly
   pdf_document:
     includes:
       in_header: ../support/432macros.tex
     number_sections: no
     template: ../support/dm-docs.tex
     toc: no
+    highlight: tango
+  html_document:
+    theme: flatly
+    highlight: tango
 ---
 
 ## 1. Functions.

@@ -77,6 +77,7 @@ download.file(
 knitr::include_graphics("gfx/engage.jpg")
 ```
 
+
 You will now attempt to re-engage last semester’s brain cells by doing things you should already know how to do in possibly new ways. The "properties.txt" dataset has an outcome (rental rates) and four predictors (age, operating expenses + taxes, vacancy rates, square footage). The goal is to predict rental rates using these four variables.
 
 1. Use the `lm` function to estimate the linear model of rental rates on all four predictors. Produce a table summarizing the output. 

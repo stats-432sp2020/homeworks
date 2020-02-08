@@ -1,0 +1,260 @@
+---
+title: "Homework 2"
+author: "Solution"
+date: "Due 6 February 2020, 11:59pm"
+output:
+  pdf_document:
+    includes:
+      in_header: ../support/432macros.tex
+    number_sections: no
+    template: ../support/dm-docs.tex
+    toc: no
+  html_document:
+    theme: flatly
+    fig_caption: yes
+---
+
+```{r, include=FALSE}
+# General set-up for the report:
+# Don't print out code
+# Save results so that code blocks aren't re-run unless code
+# changes (cache), _or_ a relevant earlier code block changed (autodep),
+# don't clutter R output with messages or warnings (message, warning)
+library(MASS)
+library(knitr)
+library(tidyverse)
+opts_chunk$set(echo=FALSE, fig.align = TRUE, fig.height = 4, fig.width = 6,
+               cache=TRUE, autodep=TRUE,
+               message=FALSE, warning=FALSE)
+# Turn off meaningless clutter in summary() output
+options(show.signif.stars=FALSE)
+```
+
+## Introduction
+
+Appraising residential real estate --- predicting the price at which it could
+be sold, under current market conditions --- is important not only for people
+buying and selling houses to live in, but also for real estate developers,
+mortgage lenders, and local tax assessors.  Currently, appraisal is usually
+done by skilled professionals who make a good living at it, so naturally there
+is interest in replacing them by machines.  In this report, we investigate the
+feasibility of real estate appraisal by means of linear statistical models.
+
+Specific points of interest to the client include the relationship between the
+quality of the house's construction and its price; the relationship between age
+and price, and whether this changes depending on proximity to a highway; and
+the relationship between price, the finished area of the house, and the number
+of bedrooms.
+
+## Exploratory data analysis
+
+```{r, include=FALSE}
+# Load the data
+real_estate <- read_csv(
+  "http://www.stat.cmu.edu/~cshalizi/mreg/15/hw/08/real-estate.csv",
+  col_types = "dddiififdfdf") %>% 
+  mutate(
+    Quality = fct_recode(Quality, High = "1", Medium = "2", Low = "3"),
+    AC = fct_recode(Airconditioning, Yes = "1", No = "0"),
+    Pool = fct_recode(Pool, Yes="1", No="0"),
+    Highway = fct_recode(as.factor(AdjHighway), Adjacent="1", Not = "0")
+  )
+
+```
+
+The data, supplied by an undisclosed client, come from a selection of
+"arms-length" residential real estate transactions in an unnamed city in the
+American midwest in 2002.  This records, for `r nrow(real_estate)`
+transactions, the sale price of the house, its finished area and the area of
+the lot, the number of bedrooms, the number of bathrooms, the number of cars
+that will fit in its garage, the year it was built, whether it has air
+conditioning, whether it has a pool, whether it is adjacent to a highway, and
+the quality of construction, graded from low to medium or high.  It is notable
+that, except for highway adjacency, we have no information about the location
+of the houses, though this is proverbially a very important influence on their
+price, through access to schools, commuting time, land value, etc.
+
+```{r, pairsplot, fig.width=8, fig.height=8, fig.cap="Pairs plot for quantitative variables"}
+# Base R version
+# pairs(Price ~ Sqft+Bedroom+Bathroom+Garage+YearBuild+Lot, data=real.estate,
+#      pch=19, cex=0.3)
+
+# Pretty version
+library(GGally)
+library(cowplot)
+ggpairs(
+  real_estate, 
+  c("Price", "Sqft", "Bedroom","Bathroom","Garage", "YearBuild", "Lot"),
+  upper="blank", 
+  lower = list(continuous = wrap("points", alpha=.4, color="purple"))
+  ) + theme_cowplot(8)
+```
+
+
+Pairwise scatter-plots for the quantitative variables (Figure 1) show that,
+unsurprisingly, there is a positive relationship between price and area
+(stronger for finished area than the total lot size), and price and the number
+of bedrooms, bathrooms, or garage slots (all three of which are strongly
+positively related to each other).  The relation between price and these three
+"count" variables could well be linear.  There is a positive relation between
+price and the year of construction, i.e., newer houses cost more.  Newer houses
+also tend to be larger, both in finished area and the number of rooms, though
+not to have bigger lots.
+
+Inspection of the plots shows there is one record with 0 bedrooms, 0 bathrooms,
+and a three-car garage with air conditioning.  This is either not a piece of
+residential real estate, or its data is hopelessly corrupt; either way, we drop
+it from the data from now on.
+
+```{r}
+# What's that outlier with zero bedrooms and zero bathrooms?
+  # From visual inspection of pairs plot, no other weirdness with houses without
+  # bedrooms or bathrooms
+# bad.row <- which(real.estate$Bedroom==0 & real.estate$Bathroom==0)
+# Examination of real.estate[bad.row,] shows Garage==3, Airconditioning==1, etc.
+# Remove the bad row
+real_estate <- dplyr::filter(real_estate, !(Bedroom == 0 & Bathroom==0))
+```
+
+
+```{r, price-given-discrete-predictors-gg, fig.cap="Conditional distributions of price given qualitative predictors. Box widths reflect the number of points in each group, notches show medians plus/minus a margin of error."}
+real_estate %>% 
+  dplyr::select(Price, AC, Pool, Highway, Quality) %>% 
+  pivot_longer(-Price) %>%
+  ggplot(aes(y=Price/10000, x=value, fill=value)) + geom_boxplot() + 
+  facet_wrap(~name, ncol=2, scales='free_x') +
+  theme_cowplot(12) + theme(legend.position = 'none') + ylab("Price ($10000s)") + 
+  scale_fill_brewer(palette = "Set1")
+```
+
+
+Box-plots, showing the conditional distribution of price for each level of the
+categorical predictors, suggest that houses with air-conditioning and pools are
+more expensive, that being next to a highway makes little difference, and that
+higher quality of construction implies, on average, higher prices.  The
+mid-points of the boxes for quality don't _quite_ fall on a straight line, so
+treating quality as a numerical variable isn't obviously compelling, but not
+clearly crazy either.
+
+## Initial Modeling
+
+To answer the client's questions, our model should include quality, finished
+area, the number of bedrooms (and the interaction between those two), and the
+year the house was built and whether it is adjacent to a highway (and the
+interaction between those two).  Based on our EDA, it also seems reasonable to
+include air-conditioning and pools.  We deliberately left out the number of
+bathrooms, the size of the garage, and the size of the lot.  While price seems
+to be linearly related to the number of bedrooms, we include it as a factor,
+both to check that, and to get three distinct slopes for price on finished area
+as quality varies.
+
+```{r, include=FALSE}
+initial_mdl <- lm(Price ~ Quality + Sqft*factor(Bedroom)
+                  + YearBuild*AdjHighway + Airconditioning + Pool,
+                  data=real_estate)
+```
+
+This initial model has a root-mean-squared error of \$ $\pm
+`r signif(summary(initial_mdl)$sigma, 3)`$, which is not shabby when the median
+house price is \$ $`r signif(median(real_estate$Price),3)`$.  Before passing to
+issues of model selection, however, such as whether all the interactions are
+necessary, whether discrete variables might be usefully recoded, etc., let's
+look at the diagnostic plots.
+
+The first thing to say is that the distribution of the residuals doesn't
+look very Gaussian, and a Box-Cox transformation suggests the un-intuitive,
+indeed  un-interpretable, transformation $1/\sqrt[3]{Y}$.
+
+
+```{r,qq-and-boxcox-plots-gg, eval=FALSE, out.height="0.2\\textheight", fig.align="center", fig.cap="Q-Q plot of the standardized residuals (left) and Box-Cox plot (right)"}
+qq = ggplot(data.frame(residuals = rstandard(initial_mdl)), aes(sample=residuals)) + 
+  geom_qq(color="purple") + geom_qq_line(color="orange",size=2) + theme_cowplot()
+bc = boxcox(initial.mdl, plotit = FALSE)
+ran = bc$x[bc$y > max(bc$y) - 0.5*qchisq(.95,1)]
+bcplot = ggplot(data.frame(loglikelihood = bc$y, lambda = bc$x), aes(lambda, loglikelihood)) +
+  geom_line(color="purple") + geom_vline(xintercept = bc$x[which.max(bc$y)], color="orange", size=2) +
+  geom_vline(xintercept = c(min(ran),max(ran)), color="orange", linetype="dotted") + theme_cowplot()
+plot_grid(qq, bcplot)
+```
+
+
+Clients who ask for a model of prices are rarely happy with models for the
+inverse cubic roots of prices, so we must be doing something wrong.  Examining
+plots of residuals versus predictors suggests that lot size matters after all,
+at least for big lots.  The plots also suggest that houses built after $\approx
+1980$ are worth more than the model anticipates.  The distributions of
+residuals conditional on discrete predictors, however, actually look mostly
+homogeneous.
+
+```{r, include=FALSE}
+# Function to plot residuals and fitted values vs. predictors
+# Note the similarity to the function from hw1
+# Inputs: 
+#     mdl - a fitted lm model; 
+#     dataframe - the name of the data frame; 
+#     pred_list - quoted names of continuous predictors
+# Output: returns a ggplot object
+resid_vs_pred <- function(mdl, dataframe, pred_list) {
+    df = dataframe[pred_list]
+    df$resids = residuals(mdl) # how do you get residuals?
+    df$fitted_values = fitted(mdl) # how do you get the fitted values?
+    preds_resids = df %>% 
+      pivot_longer(-resids, names_to = 'predictor', values_to = 'value')
+    
+    ggplot(preds_resids, aes(x=value, y=resids)) + geom_point() +
+      geom_smooth() + facet_wrap(~predictor, scales = 'free_x') +
+      geom_hline(yintercept = 0, color="red") +
+      geom_hline(yintercept = c(2*sd(df$resids),-2*sd(df$resids)),
+                 color="grey", linetype="dashed") +
+      theme_cowplot(8) + xlab('')
+}
+```
+
+```{r, diagnostic-plots, fig.height=6, fig.cap=" Residuals versus fitted values and continuous predictors, and versus the discrete predictors.  Grey lines are smoothing splines; dotted lines indicate plus/minus 2 standard deviations, either constant (red) or from a spline smoothing of the squared residuals (grey)."}
+cont_resids = resid_vs_pred(
+  initial_mdl, real_estate, c("Sqft","YearBuild"))
+bxplt_dat = real_estate %>% 
+  select(Bedroom, Bathroom, Garage, Highway, Quality, AC) %>%
+  mutate_at(vars(Bedroom, Bathroom, Garage), as.factor)
+bxplt_dat$residuals = rstandard(initial_mdl)
+bxplt_dat = bxplt_dat %>% pivot_longer(-residuals)
+bxplts = ggplot(bxplt_dat, aes(y=residuals, x=value, fill=value)) +
+  geom_boxplot() + facet_wrap(~name, scales = "free_x") +
+  scale_fill_viridis_d() +
+  theme_cowplot(8) + theme(legend.position = 'none') + xlab('')
+plot_grid(cont_resids, bxplts, nrow = 2, rel_heights = c(1.25,2))
+```
+
+
+
+## Outliers
+
+In addition to the house with no bedrooms or bathrooms, examination of Cook's
+distance shows two houses with exceptional influence over the model.
+
+```{r, cooks-plot, out.height="0.25\\textheight", fig.align="center", fig.cap="Cook's distance for each data point: extremely influential points are flagged in red."}
+ggplot(
+  tibble(cook = cooks.distance(initial_mdl),
+         bad_houses = cook > 0.1,
+         price = real_estate$Price),
+  aes(price/10000, cook, color=bad_houses)) + geom_point() +
+  theme_cowplot() + ylab("Cook's Distance") +
+  theme(legend.position = c(.75,.75)) +
+  scale_color_manual(values=c("purple","orange")) +
+  labs(color = "Bad houses") + xlab("price ($10000s)")
+bad_houses <- which(cooks.distance(initial_mdl)>0.1)
+```
+
+On examination, these are quite weird: small in area, fairly cheap, but heavy
+on bedrooms.  These look more like rental properties than residences.  Checking
+the pairs plot again shows no other such anomalies, so we delete them but
+leave the rest alone.  Re-doing the other diagnostic plots shows little
+over-all change, however (figures omitted).
+```{r}
+kable(real_estate[bad_houses,c("Price","Sqft","Bedroom","Bathroom")])
+```
+
+```{r}
+real_estate <- real_estate[-bad_houses,]
+```
+
